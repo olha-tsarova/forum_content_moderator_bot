@@ -1,5 +1,5 @@
 {
-  "name": "tg-topic-bot",
+  "name": "forum_content_moderator_bot",
   "version": "1.0.0",
   "description": "Telegram forum topic message type filter bot",
   "main": "dist/index.js",
