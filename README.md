@@ -1,4 +1,4 @@
-# tg-topic-bot
+# forum_content_moderator_bot
 
 Бот фільтрує типи повідомлень у топіках Telegram-форумів.
 Працює одразу з багатьма чатами: кожен адмін налаштовує правила сам через команди.
@@ -56,8 +56,8 @@ pm2 startup  # щоб стартував після перезавантажен
 
 ### Docker
 ```bash
-docker build -t tg-topic-bot .
-docker run -d --env-file .env --restart unless-stopped tg-topic-bot
+docker build -t forum_content_moderator_bot .
+docker run -d --env-file .env --restart unless-stopped forum_content_moderator_bot
 ```
 
 ### Railway
