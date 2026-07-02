@@ -18,6 +18,16 @@ type TopicRuleRow = {
   restricted_types: string | null;
 };
 
+type RuleCountRow = {
+  count: number;
+};
+
+type LegacyRuleRow = {
+  chat_id: number;
+  topic_id: number;
+  types: string;
+};
+
 const configuredDbPath = process.env.DB_PATH?.trim();
 const dbPath =
   configuredDbPath && configuredDbPath.length > 0
@@ -29,6 +39,91 @@ const db = new Database(dbPath);
 
 export function getDatabasePath(): string {
   return dbPath;
+}
+
+function getTopicRuleCount(database: Database.Database): number {
+  const row = database
+    .prepare("SELECT COUNT(*) AS count FROM topic_rules")
+    .get() as RuleCountRow;
+  return row.count;
+}
+
+function getLegacyTypeColumnName(
+  database: Database.Database
+): "restricted_types" | "allowed_types" | null {
+  const columns = database
+    .prepare("PRAGMA table_info(topic_rules)")
+    .all() as Array<{ name: string }>;
+
+  if (columns.some((column) => column.name === "restricted_types")) {
+    return "restricted_types";
+  }
+  if (columns.some((column) => column.name === "allowed_types")) {
+    return "allowed_types";
+  }
+  return null;
+}
+
+function getLegacyDbCandidates(): string[] {
+  const rawCandidates = [
+    path.resolve(process.cwd(), "bot.db"),
+    path.resolve(process.cwd(), "data", "bot.db"),
+    "/app/bot.db",
+    "/app/data/bot.db",
+  ];
+
+  return Array.from(new Set(rawCandidates)).filter(
+    (candidate) => candidate !== dbPath
+  );
+}
+
+function importRulesFromLegacyDb(legacyDbPath: string): number {
+  if (!fs.existsSync(legacyDbPath)) return 0;
+  const stats = fs.statSync(legacyDbPath);
+  if (!stats.isFile() || stats.size === 0) return 0;
+
+  const legacyDb = new Database(legacyDbPath, { readonly: true });
+
+  try {
+    const tableExists = legacyDb
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'topic_rules'"
+      )
+      .get() as { name: string } | undefined;
+    if (!tableExists) return 0;
+
+    const typeColumn = getLegacyTypeColumnName(legacyDb);
+    if (!typeColumn) return 0;
+
+    const rows = legacyDb
+      .prepare(
+        `SELECT chat_id, topic_id, ${typeColumn} AS types
+         FROM topic_rules
+         WHERE ${typeColumn} IS NOT NULL`
+      )
+      .all() as LegacyRuleRow[];
+
+    if (rows.length === 0) return 0;
+
+    const upsert = db.prepare(
+      `INSERT INTO topic_rules (chat_id, topic_id, restricted_types, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(chat_id, topic_id) DO UPDATE SET
+         restricted_types = excluded.restricted_types,
+         updated_at = datetime('now')`
+    );
+
+    const transaction = db.transaction((items: LegacyRuleRow[]) => {
+      for (const item of items) {
+        upsert.run(item.chat_id, item.topic_id, item.types);
+      }
+    });
+    transaction(rows);
+
+    return rows.length;
+  } finally {
+    legacyDb.close();
+  }
 }
 
 function initDb(): void {
@@ -63,6 +158,18 @@ function initDb(): void {
       warning_ttl_ms INTEGER NOT NULL DEFAULT 5000
     );
   `);
+
+  if (getTopicRuleCount(db) > 0) return;
+
+  for (const legacyDbPath of getLegacyDbCandidates()) {
+    const importedCount = importRulesFromLegacyDb(legacyDbPath);
+    if (importedCount > 0) {
+      console.log(
+        `[db] imported ${importedCount} topic rules from legacy DB: ${legacyDbPath}`
+      );
+      return;
+    }
+  }
 }
 
 initDb();
