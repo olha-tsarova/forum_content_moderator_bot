@@ -1,0 +1,23 @@
+{
+  "name": "tg-topic-bot",
+  "version": "1.0.0",
+  "description": "Telegram forum topic message type filter bot",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "dotenv": "^16.0.0",
+    "grammy": "^1.31.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "@types/node-fetch": "^2.6.13",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
+  }
+}
