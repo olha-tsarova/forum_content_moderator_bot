@@ -62,12 +62,39 @@ function requireTopic(ctx: Context): number | null {
   return topicId ?? null;
 }
 
+async function replyAndCleanup(
+  ctx: Context,
+  text: string,
+  options?: { message_thread_id?: number }
+): Promise<void> {
+  if (!ctx.chat || !ctx.message) return;
+
+  const chatId = ctx.chat.id;
+  const commandMessageId = ctx.message.message_id;
+
+  try {
+    const reply = await ctx.reply(text, options);
+    const ttlMs = getWarningTtl(chatId);
+
+    setTimeout(() => {
+      bot.api.deleteMessage(chatId, commandMessageId).catch((err) => {
+        console.error("[delete command] failed:", err);
+      });
+      bot.api.deleteMessage(chatId, reply.message_id).catch((err) => {
+        console.error("[delete command reply] failed:", err);
+      });
+    }, ttlMs);
+  } catch (err) {
+    console.error("[command reply] failed:", err);
+  }
+}
+
 bot.command("setup", async (ctx) => {
   if (!ctx.chat) return;
 
   const helpLines = [
     "Setup for the current topic:",
-    "/restrict text photo document",
+    "/restrict text photo document (add restrictions)",
     "/allow text photo (unrestrict selected types)",
     "/allow (remove all restrictions in current topic)",
     "/types",
@@ -78,34 +105,52 @@ bot.command("setup", async (ctx) => {
     `Supported types: ${SUPPORTED_TYPES.join(", ")}`,
     "Commands can be used only by chat admins.",
   ];
-  await ctx.reply(helpLines.join("\n"));
+  await replyAndCleanup(ctx, helpLines.join("\n"));
 });
 
 bot.command("restrict", async (ctx) => {
   if (!ctx.chat || !ctx.from) return;
   if (!(await isAdmin(ctx))) {
-    await ctx.reply("Only a chat admin can change settings.");
+    await replyAndCleanup(ctx, "Only a chat admin can change settings.");
     return;
   }
 
   const topicId = requireTopic(ctx);
   if (!topicId) {
-    await ctx.reply("Run this command inside the target topic.");
+    await replyAndCleanup(ctx, "Run this command inside the target topic.");
     return;
   }
 
   const rawArgs = typeof ctx.match === "string" ? ctx.match : "";
   const parsedTypes = parseTypes(rawArgs);
   if (parsedTypes.length === 0) {
-    await ctx.reply(
+    await replyAndCleanup(
+      ctx,
       `Please provide at least one type. Example: /restrict text photo\nSupported: ${SUPPORTED_TYPES.join(", ")}`
     );
     return;
   }
 
-  setRestrictedTypes(ctx.chat.id, topicId, parsedTypes, ctx.from.id);
-  await ctx.reply(
-    `Updated topic ${topicId}: restricted types are ${parsedTypes.join(", ")}`,
+  const currentRestricted = getRestrictedTypes(ctx.chat.id, topicId) ?? [];
+  const updatedRestricted = Array.from(
+    new Set([...currentRestricted, ...parsedTypes])
+  );
+
+  if (updatedRestricted.length === currentRestricted.length) {
+    await replyAndCleanup(
+      ctx,
+      `No changes for topic ${topicId}. These types are already restricted: ${currentRestricted.join(
+        ", "
+      )}`,
+      { message_thread_id: topicId }
+    );
+    return;
+  }
+
+  setRestrictedTypes(ctx.chat.id, topicId, updatedRestricted, ctx.from.id);
+  await replyAndCleanup(
+    ctx,
+    `Updated topic ${topicId}: restricted types are ${updatedRestricted.join(", ")}`,
     { message_thread_id: topicId }
   );
 });
@@ -113,21 +158,25 @@ bot.command("restrict", async (ctx) => {
 bot.command("allow", async (ctx) => {
   if (!ctx.chat || !ctx.from) return;
   if (!(await isAdmin(ctx))) {
-    await ctx.reply("Only a chat admin can change settings.");
+    await replyAndCleanup(ctx, "Only a chat admin can change settings.");
     return;
   }
 
   const topicId = requireTopic(ctx);
   if (!topicId) {
-    await ctx.reply("Run this command inside the target topic.");
+    await replyAndCleanup(ctx, "Run this command inside the target topic.");
     return;
   }
 
   const restrictedTypes = getRestrictedTypes(ctx.chat.id, topicId) ?? [];
   if (restrictedTypes.length === 0) {
-    await ctx.reply(`Topic ${topicId} has no restrictions right now.`, {
-      message_thread_id: topicId,
-    });
+    await replyAndCleanup(
+      ctx,
+      `Topic ${topicId} has no restrictions right now.`,
+      {
+        message_thread_id: topicId,
+      }
+    );
     return;
   }
 
@@ -136,7 +185,8 @@ bot.command("allow", async (ctx) => {
 
   if (parsedTypes.length === 0) {
     resetTopicRule(ctx.chat.id, topicId);
-    await ctx.reply(
+    await replyAndCleanup(
+      ctx,
       `All restrictions were removed for topic ${topicId}. Everything is now allowed.`,
       { message_thread_id: topicId }
     );
@@ -149,7 +199,8 @@ bot.command("allow", async (ctx) => {
 
   if (updatedRestricted.length === 0) {
     resetTopicRule(ctx.chat.id, topicId);
-    await ctx.reply(
+    await replyAndCleanup(
+      ctx,
       `All restrictions were removed for topic ${topicId}. Everything is now allowed.`,
       { message_thread_id: topicId }
     );
@@ -157,7 +208,8 @@ bot.command("allow", async (ctx) => {
   }
 
   setRestrictedTypes(ctx.chat.id, topicId, updatedRestricted, ctx.from.id);
-  await ctx.reply(
+  await replyAndCleanup(
+    ctx,
     `Updated topic ${topicId}: restricted types are ${updatedRestricted.join(", ")}`,
     { message_thread_id: topicId }
   );
@@ -168,19 +220,21 @@ bot.command("types", async (ctx) => {
 
   const topicId = requireTopic(ctx);
   if (!topicId) {
-    await ctx.reply("Run this command inside the target topic.");
+    await replyAndCleanup(ctx, "Run this command inside the target topic.");
     return;
   }
 
   const restricted = getRestrictedTypes(ctx.chat.id, topicId);
   if (!restricted || restricted.length === 0) {
-    await ctx.reply(
+    await replyAndCleanup(
+      ctx,
       `No restrictions are configured for topic ${topicId}. Everything is allowed.`
     );
     return;
   }
 
-  await ctx.reply(
+  await replyAndCleanup(
+    ctx,
     `Restricted types for topic ${topicId}: ${restricted.join(", ")}`,
     { message_thread_id: topicId }
   );
@@ -191,31 +245,31 @@ bot.command("topics", async (ctx) => {
   const rules = listTopicRules(ctx.chat.id);
 
   if (rules.length === 0) {
-    await ctx.reply("No topics are configured for this chat yet.");
+    await replyAndCleanup(ctx, "No topics are configured for this chat yet.");
     return;
   }
 
   const lines = rules.map(
     (rule) => `Topic ${rule.topicId}: ${rule.restrictedTypes.join(", ")}`
   );
-  await ctx.reply(lines.join("\n"));
+  await replyAndCleanup(ctx, lines.join("\n"));
 });
 
 bot.command("reset_topic", async (ctx) => {
   if (!ctx.chat) return;
   if (!(await isAdmin(ctx))) {
-    await ctx.reply("Only a chat admin can change settings.");
+    await replyAndCleanup(ctx, "Only a chat admin can change settings.");
     return;
   }
 
   const topicId = requireTopic(ctx);
   if (!topicId) {
-    await ctx.reply("Run this command inside the target topic.");
+    await replyAndCleanup(ctx, "Run this command inside the target topic.");
     return;
   }
 
   resetTopicRule(ctx.chat.id, topicId);
-  await ctx.reply(`Rule for topic ${topicId} has been deleted.`, {
+  await replyAndCleanup(ctx, `Rule for topic ${topicId} has been deleted.`, {
     message_thread_id: topicId,
   });
 });
