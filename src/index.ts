@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Bot, Context } from "grammy";
 import {
   getRestrictedTypes,
+  getDatabasePath,
   getWarningTtl,
   listTopicRules,
   MessageType,
@@ -323,6 +324,7 @@ bot.catch((err) => {
 });
 
 console.log("Bot is starting...");
+console.log(`Database path: ${getDatabasePath()}`);
 bot.start({
   onStart: () => console.log("Bot is running"),
 });

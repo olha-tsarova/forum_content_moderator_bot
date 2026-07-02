@@ -18,10 +18,18 @@ type TopicRuleRow = {
   restricted_types: string | null;
 };
 
-const dataDir = path.resolve(process.cwd(), "data");
-const dbPath = path.join(dataDir, "bot.db");
+const configuredDbPath = process.env.DB_PATH?.trim();
+const dbPath =
+  configuredDbPath && configuredDbPath.length > 0
+    ? path.resolve(configuredDbPath)
+    : path.resolve(process.cwd(), "data", "bot.db");
+const dataDir = path.dirname(dbPath);
 fs.mkdirSync(dataDir, { recursive: true });
 const db = new Database(dbPath);
+
+export function getDatabasePath(): string {
+  return dbPath;
+}
 
 function initDb(): void {
   db.exec(`
