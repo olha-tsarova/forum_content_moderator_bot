@@ -15,7 +15,7 @@ export type MessageType =
 
 type TopicRuleRow = {
   topic_id: number;
-  allowed_types: string;
+  restricted_types: string | null;
 };
 
 const dataDir = path.resolve(process.cwd(), "data");
@@ -28,12 +28,26 @@ function initDb(): void {
     CREATE TABLE IF NOT EXISTS topic_rules (
       chat_id INTEGER NOT NULL,
       topic_id INTEGER NOT NULL,
-      allowed_types TEXT NOT NULL,
+      restricted_types TEXT NOT NULL,
       updated_by INTEGER,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (chat_id, topic_id)
     );
   `);
+
+  const columns = db
+    .prepare("PRAGMA table_info(topic_rules)")
+    .all() as Array<{ name: string }>;
+  const hasRestrictedTypes = columns.some(
+    (column) => column.name === "restricted_types"
+  );
+  const hasAllowedTypes = columns.some((column) => column.name === "allowed_types");
+  if (!hasRestrictedTypes && hasAllowedTypes) {
+    db.exec("ALTER TABLE topic_rules ADD COLUMN restricted_types TEXT;");
+    db.exec(
+      "UPDATE topic_rules SET restricted_types = allowed_types WHERE restricted_types IS NULL"
+    );
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS chat_settings (
@@ -45,34 +59,34 @@ function initDb(): void {
 
 initDb();
 
-export function getAllowedTypes(
+export function getRestrictedTypes(
   chatId: number,
   topicId: number
 ): MessageType[] | null {
   const row = db
     .prepare(
-      "SELECT allowed_types FROM topic_rules WHERE chat_id = ? AND topic_id = ?"
+      "SELECT restricted_types FROM topic_rules WHERE chat_id = ? AND topic_id = ?"
     )
-    .get(chatId, topicId) as { allowed_types: string } | undefined;
+    .get(chatId, topicId) as { restricted_types: string | null } | undefined;
 
-  if (!row) return null;
-  return JSON.parse(row.allowed_types) as MessageType[];
+  if (!row || !row.restricted_types) return null;
+  return JSON.parse(row.restricted_types) as MessageType[];
 }
 
-export function setAllowedTypes(
+export function setRestrictedTypes(
   chatId: number,
   topicId: number,
-  allowedTypes: MessageType[],
+  restrictedTypes: MessageType[],
   updatedBy: number
 ): void {
   db.prepare(
-    `INSERT INTO topic_rules (chat_id, topic_id, allowed_types, updated_by, updated_at)
+    `INSERT INTO topic_rules (chat_id, topic_id, restricted_types, updated_by, updated_at)
      VALUES (?, ?, ?, ?, datetime('now'))
      ON CONFLICT(chat_id, topic_id) DO UPDATE SET
-       allowed_types = excluded.allowed_types,
+       restricted_types = excluded.restricted_types,
        updated_by = excluded.updated_by,
        updated_at = datetime('now')`
-  ).run(chatId, topicId, JSON.stringify(allowedTypes), updatedBy);
+  ).run(chatId, topicId, JSON.stringify(restrictedTypes), updatedBy);
 }
 
 export function resetTopicRule(chatId: number, topicId: number): void {
@@ -84,16 +98,18 @@ export function resetTopicRule(chatId: number, topicId: number): void {
 
 export function listTopicRules(
   chatId: number
-): Array<{ topicId: number; allowedTypes: MessageType[] }> {
+): Array<{ topicId: number; restrictedTypes: MessageType[] }> {
   const rows = db
     .prepare(
-      "SELECT topic_id, allowed_types FROM topic_rules WHERE chat_id = ? ORDER BY topic_id ASC"
+      "SELECT topic_id, restricted_types FROM topic_rules WHERE chat_id = ? ORDER BY topic_id ASC"
     )
     .all(chatId) as TopicRuleRow[];
 
   return rows.map((row) => ({
     topicId: row.topic_id,
-    allowedTypes: JSON.parse(row.allowed_types) as MessageType[],
+    restrictedTypes: row.restricted_types
+      ? (JSON.parse(row.restricted_types) as MessageType[])
+      : [],
   }));
 }
 

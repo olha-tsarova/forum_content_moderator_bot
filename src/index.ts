@@ -1,12 +1,12 @@
 import "dotenv/config";
 import { Bot, Context } from "grammy";
 import {
-  getAllowedTypes,
+  getRestrictedTypes,
   getWarningTtl,
   listTopicRules,
   MessageType,
   resetTopicRule,
-  setAllowedTypes,
+  setRestrictedTypes,
 } from "./db";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -14,7 +14,7 @@ if (!BOT_TOKEN) throw new Error("BOT_TOKEN is not set in .env");
 
 const bot = new Bot(BOT_TOKEN);
 
-const ALLOWED_TYPES: MessageType[] = [
+const SUPPORTED_TYPES: MessageType[] = [
   "text",
   "photo",
   "document",
@@ -47,7 +47,7 @@ function parseTypes(input: string): MessageType[] {
     .map((item) => item.trim())
     .filter(Boolean);
   return values.filter((value): value is MessageType =>
-    ALLOWED_TYPES.includes(value as MessageType)
+    SUPPORTED_TYPES.includes(value as MessageType)
   );
 }
 
@@ -67,18 +67,21 @@ bot.command("setup", async (ctx) => {
 
   const helpLines = [
     "Setup for the current topic:",
-    "/allow text photo document",
+    "/restrict text photo document",
+    "/allow text photo (unrestrict selected types)",
+    "/allow (remove all restrictions in current topic)",
     "/types",
     "/topics",
     "/reset_topic",
     "",
-    `Available types: ${ALLOWED_TYPES.join(", ")}`,
+    "Default behavior: everything is allowed except restricted types.",
+    `Supported types: ${SUPPORTED_TYPES.join(", ")}`,
     "Commands can be used only by chat admins.",
   ];
   await ctx.reply(helpLines.join("\n"));
 });
 
-bot.command("allow", async (ctx) => {
+bot.command("restrict", async (ctx) => {
   if (!ctx.chat || !ctx.from) return;
   if (!(await isAdmin(ctx))) {
     await ctx.reply("Only a chat admin can change settings.");
@@ -95,14 +98,67 @@ bot.command("allow", async (ctx) => {
   const parsedTypes = parseTypes(rawArgs);
   if (parsedTypes.length === 0) {
     await ctx.reply(
-      `Please provide at least one type. Example: /allow text photo\nAvailable: ${ALLOWED_TYPES.join(", ")}`
+      `Please provide at least one type. Example: /restrict text photo\nSupported: ${SUPPORTED_TYPES.join(", ")}`
     );
     return;
   }
 
-  setAllowedTypes(ctx.chat.id, topicId, parsedTypes, ctx.from.id);
+  setRestrictedTypes(ctx.chat.id, topicId, parsedTypes, ctx.from.id);
   await ctx.reply(
-    `Updated topic ${topicId}: allowed types are ${parsedTypes.join(", ")}`,
+    `Updated topic ${topicId}: restricted types are ${parsedTypes.join(", ")}`,
+    { message_thread_id: topicId }
+  );
+});
+
+bot.command("allow", async (ctx) => {
+  if (!ctx.chat || !ctx.from) return;
+  if (!(await isAdmin(ctx))) {
+    await ctx.reply("Only a chat admin can change settings.");
+    return;
+  }
+
+  const topicId = requireTopic(ctx);
+  if (!topicId) {
+    await ctx.reply("Run this command inside the target topic.");
+    return;
+  }
+
+  const restrictedTypes = getRestrictedTypes(ctx.chat.id, topicId) ?? [];
+  if (restrictedTypes.length === 0) {
+    await ctx.reply(`Topic ${topicId} has no restrictions right now.`, {
+      message_thread_id: topicId,
+    });
+    return;
+  }
+
+  const rawArgs = typeof ctx.match === "string" ? ctx.match : "";
+  const parsedTypes = parseTypes(rawArgs);
+
+  if (parsedTypes.length === 0) {
+    resetTopicRule(ctx.chat.id, topicId);
+    await ctx.reply(
+      `All restrictions were removed for topic ${topicId}. Everything is now allowed.`,
+      { message_thread_id: topicId }
+    );
+    return;
+  }
+
+  const updatedRestricted = restrictedTypes.filter(
+    (item) => !parsedTypes.includes(item)
+  );
+
+  if (updatedRestricted.length === 0) {
+    resetTopicRule(ctx.chat.id, topicId);
+    await ctx.reply(
+      `All restrictions were removed for topic ${topicId}. Everything is now allowed.`,
+      { message_thread_id: topicId }
+    );
+    return;
+  }
+
+  setRestrictedTypes(ctx.chat.id, topicId, updatedRestricted, ctx.from.id);
+  await ctx.reply(
+    `Updated topic ${topicId}: restricted types are ${updatedRestricted.join(", ")}`,
     { message_thread_id: topicId }
   );
 });
@@ -116,14 +172,16 @@ bot.command("types", async (ctx) => {
     return;
   }
 
-  const allowed = getAllowedTypes(ctx.chat.id, topicId);
-  if (!allowed) {
-    await ctx.reply(`No rule is configured for topic ${topicId} yet.`);
+  const restricted = getRestrictedTypes(ctx.chat.id, topicId);
+  if (!restricted || restricted.length === 0) {
+    await ctx.reply(
+      `No restrictions are configured for topic ${topicId}. Everything is allowed.`
+    );
     return;
   }
 
   await ctx.reply(
-    `Allowed types for topic ${topicId}: ${allowed.join(", ")}`,
+    `Restricted types for topic ${topicId}: ${restricted.join(", ")}`,
     { message_thread_id: topicId }
   );
 });
@@ -138,7 +196,7 @@ bot.command("topics", async (ctx) => {
   }
 
   const lines = rules.map(
-    (rule) => `Topic ${rule.topicId}: ${rule.allowedTypes.join(", ")}`
+    (rule) => `Topic ${rule.topicId}: ${rule.restrictedTypes.join(", ")}`
   );
   await ctx.reply(lines.join("\n"));
 });
@@ -169,11 +227,11 @@ bot.on("message", async (ctx) => {
   const topicId = ctx.message.message_thread_id;
   if (!topicId) return;
 
-  const allowed = getAllowedTypes(ctx.chat.id, topicId);
-  if (!allowed) return;
+  const restricted = getRestrictedTypes(ctx.chat.id, topicId);
+  if (!restricted || restricted.length === 0) return;
 
   const type = getMessageType(ctx);
-  if (!type || allowed.includes(type)) return;
+  if (!type || !restricted.includes(type)) return;
 
   try {
     await ctx.deleteMessage();
@@ -188,7 +246,7 @@ bot.on("message", async (ctx) => {
 
   try {
     const warning = await ctx.reply(
-      `${username}, only these types are allowed in this topic: ${allowed.join(
+      `${username}, this type is restricted in this topic. Restricted types: ${restricted.join(
         ", "
       )}`,
       { message_thread_id: topicId }
